@@ -54,24 +54,34 @@ def process_log(current_log_path):
         # Get the list of events files in the log directory3
         args = None
         method = None
-        contexture = False
+        contexture = 0
+        softmax = 0
         events_files = [os.path.join(current_log_path, file) for file in os.listdir(current_log_path) if file.startswith('events.out')]
         args_file = os.path.join(current_log_path, "args.json")
         with open(args_file, 'r') as f:
             args = json.load(f)
 
         # parse name
+        new_name = args['ssl_method']
+        method_name = args['ssl_method']
         if "contexture" in args['ssl_method']:
-            contexture = True
+            contexture = 1
+        new_name = args['ssl_method'].replace("contexture_", "")
         if args['ssl_method'] == "online":
             # method = f"ONLINE_L{args['limit']}"
-            # method = f"online_L{args['limit']}"
-            method = f"online"
+            method = f"online_L{args['limit']}"
+            # method = f"online"
+            # method_name = f"online"
+            method_name = f"online_L{args['limit']}"
         elif args['w_online'] == 1 and args['w_pseudo'] == 1 and args['w_offline'] == 0:
             if args['ssl_method'] == "fixmatch":
-                method = f"{args['ssl_method']}_L{args['limit']}_C{args['ssl_confidence']}"
+                method = f"{args['ssl_method']}_C{args['ssl_confidence']}"
+                method_name = method
             else:
-                method = f"{args['ssl_method']}_L{args['limit']}_D{args['pseudo_samples']}_L{args['ssl_lower_confidence']}_W{args['weighted_method']}"
+                method_name = f"{args['ssl_method']}_L{args['ssl_lower_confidence']}_W{args['weighted_method']}"
+                method = f"{new_name}_{args['ssl_lower_confidence']}"
+            if args["weighted_method"] == "softmax":
+                softmax = 1
         modified_args = {k:int(v) if isinstance(v, bool) is True else v for k,v in args.items()}
         for file in events_files:
             for event in tf.compat.v1.train.summary_iterator(file):
@@ -81,7 +91,7 @@ def process_log(current_log_path):
                             if last_value_tags[value.tag] is None:
                                 last_value_tags[value.tag] = value.simple_value
                             smoothed_value = smooth(value.simple_value, last_value_tags[value.tag], weight) # Calculate smoothed value
-                            log_data.append({**modified_args, 'epoch': event.step, 'tag': value.tag, 'value': value.simple_value, 'smoothed_value': smoothed_value, 'method': method, 'contexture': contexture})
+                            log_data.append({**modified_args, 'epoch': event.step, 'tag': value.tag, 'value': value.simple_value, 'smoothed_value': smoothed_value, 'method': method, 'contexture': contexture, 'softmax': softmax, 'method_name': method_name})
                             last_value_tags[value.tag] = smoothed_value
     return log_data
 
@@ -134,33 +144,95 @@ pool.join()
 
 df = pd.DataFrame(data)
 
-means = df.groupby(['method', 'epoch', 'tag'])['smoothed_value'].mean()
+# method = f"{args['ssl_method']}_L{args['limit']}_D{args['pseudo_samples']}_L{args['ssl_lower_confidence']}_W{args['weighted_method']}"
+
+means = df.groupby(['method_name', 'method', 'limit', 'pseudo_samples', 'ssl_lower_confidence', 'softmax', 'contexture', 'epoch', 'tag'])['smoothed_value'].mean()
 # ci_low = df.groupby(['method', 'epoch', 'tag', 'method'])['value'].quantile(0.025)
 # ci_high = df.groupby(['method', 'epoch', 'tag', 'method'])['value'].quantile(0.975)
-stds = df.groupby(['method', 'epoch', 'tag'])['smoothed_value'].std()
+stds = df.groupby(['method_name', 'method', 'limit', 'pseudo_samples', 'ssl_lower_confidence', 'softmax', 'contexture', 'epoch', 'tag'])['smoothed_value'].std()
+
 
 ri_means = means.reset_index()
 ri_stds = stds.reset_index()
 
-ri_combine = ri_means.copy()
-ri_combine['std'] = ri_stds['smoothed_value']
 
-df_combine = ri_combine[ri_combine['epoch'] == 500]
+# min_mean_indices = ri_means.groupby(['method_name'])['smoothed_value'].idxmin()
+
+min_mean_indices = means.groupby(['method_name', 'method', 'limit', 'pseudo_samples', 'ssl_lower_confidence', 'softmax', 'contexture', 'tag']).idxmin()
+
+lowest_means = means[min_mean_indices]
+corresponding_stds = stds[min_mean_indices]
+
+ri_lowest_means = lowest_means.reset_index()
+ri_corresponding_stds = corresponding_stds.reset_index()
+
+ri_lowest_means = ri_lowest_means.copy()
+ri_lowest_means['std'] = ri_corresponding_stds['smoothed_value']
+
+# df_combine = ri_combine[ri_combine['epoch'] == 500]
+df_combine = ri_lowest_means
 
 ROUND_UP = 5
 
 for tag in tags:
     print (tag)
     df_combine_selected = df_combine[(df_combine['tag'] == tag)]
-    for i, row in df_combine_selected.iterrows():
-        round_value = round(row["smoothed_value"], ROUND_UP)
-        round_std = round(row["std"], ROUND_UP)
-        print (f'{row["method"]} & {round_value} \pm {round_std}')
+    list_methods = df_combine_selected['method_name'].sort_values(ascending=False).unique()
+    
+    for a_method in list_methods:
+        df_combine_method = df_combine_selected[df_combine_selected['method_name'] == a_method]
+        df_combine_method_5 = df_combine_method[(df_combine_method['pseudo_samples'] == 5)]
+        df_combine_method_5 = df_combine_method_5.sort_values(by=['method', 'softmax', 'contexture'])
+        df_combine_method_100 = df_combine_method[(df_combine_method['pseudo_samples'] == 100)]
+        df_combine_method_100 = df_combine_method_100.sort_values(by=['method', 'softmax', 'contexture'])
+        df_combine_method_FULL = df_combine_method[(df_combine_method['pseudo_samples'] == -1)]
+        df_combine_method_FULL = df_combine_method_FULL.sort_values(by=['method', 'softmax', 'contexture'])
+        
+    
+        if len(df_combine_method_5) > 0:
+            for (i, row_5) in df_combine_method_5.iterrows():
+                round_value_5 = round(row_5["smoothed_value"], ROUND_UP)
+                round_std_5 = round(row_5["std"], ROUND_UP)
+                round_value_5 = round(round_value_5 * 1_000, 2)
+                round_std_5 = round(round_std_5 * 1_000, 2)
+        
+                print (f'${row_5["method"]}$ & {row_5["softmax"]} & {row_5["contexture"]} & ${round_value_5} \pm {round_std_5}$ & ', end="")
+        else:
+            # print (f'{a_method} & {row_5["softmax"]} & {row_5["contexture"]} &', end="")
+            print (f'${a_method}$ & & & ', end="")
+    
+        if len(df_combine_method_100) > 0:
+            for (i, row_100) in df_combine_method_100.iterrows():
+                round_value_100 = round(row_100["smoothed_value"], ROUND_UP)
+                round_std_100 = round(row_100["std"], ROUND_UP)
+                round_value_100 = round(round_value_100 * 1_000, 2)
+                round_std_100 = round(round_std_100 * 1_000, 2)
+                
+                print (f'${round_value_100} \pm {round_std_100}$ & ', end="")
+        else:
+            print (f' &', end="")
+        
+        if len(df_combine_method_FULL) > 0:
+            for (i, row_FULL) in df_combine_method_FULL.iterrows():
+                round_value_FULL = round(row_FULL["smoothed_value"], ROUND_UP)
+                round_std_FULL = round(row_FULL["std"], ROUND_UP)
+                round_value_FULL = round(round_value_FULL * 1_000, 2)
+                round_std_FULL = round(round_std_FULL * 1_000, 2)
+                
+                print (f'${round_value_FULL} \pm {round_std_FULL}$ \\\\', end="'\n")
+        else:
+            print (f' &', end="\n")
+    
+    # for ((i, row_5), (i, row_100), (i, row_FULL)) in zip(df_combine_selected_5.iterrows(), df_combine_selected_100.iterrows(), df_combine_selected_FULL.iterrows()):
+        
+    #     # print (f'{row["method"]} & {round_value} \pm {round_std}')
+        
+    #     print (f'{row_5["method"]} & {round_value_5} \pm {round_std_5} & {round_value_100} \pm {round_std_100} & {round_value_5} \pm {round_std_5}')
 
 # filtered_ri_means = ri_means[(ri_means['epoch'] == 500) and (ri_means['tag'] == "critic/eval_10_critic_loss_MSE")]
 # filtered_ri_stds = ri_stds[(ri_stds['epoch'] == 500) and (ri_stds['tag'] == "critic/eval_10_critic_loss_MSE")]
 
-df_combine.to_excel(f"./df_combine_{time.time()}.xlsx")
+# df_combine.to_excel(f"./df_combine_{time.time()}.xlsx")
 
 # idx_min_means_x = means.idxmin()
 # min_mean = means[idx_min_means_x]
