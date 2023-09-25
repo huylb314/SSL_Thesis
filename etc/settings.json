@@ -1,0 +1,13 @@
+{
+    "python.analysis.extraPaths": [
+        "./amira_tools/amira_utils/src",
+        "./amira_reinforcement_learning/amira_trainer/src",
+        "./tami_gym_ros/src",
+        "./tami_gym_ros/src",
+        "./tami_gym_ros/src",
+        "./tami_gym_ros/src",
+        "./tami_gym_ros/src",
+        "./tami_rl_agent"
+    ],
+    "cmake.sourceDirectory": "/home/leh2rng/panda_ws/src/amira_control/amira_rbdl/examples/simple"
+}
